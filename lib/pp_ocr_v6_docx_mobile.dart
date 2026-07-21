@@ -355,44 +355,140 @@ Future<String?> processImageBytesToText(Uint8List imageBytes) async {
   return textBuffer.toString();
 }
 /// Hàm OCR ảnh từ Bytes và trả về cấu trúc List<OcrResult> trên Mobile
-Future<List<OcrResult>> processImageBytesToStructuredData(Uint8List imageBytes) async {
-  // ... (Toàn bộ các bước nạp model và chạy mô hình Detection giữ nguyên) ...
+/// HÀM XỬ LÝ ĐẦY ĐỦ: OCR ảnh và trả về cấu trúc cấu trúc dữ liệu List<OcrResult> chuyên biệt
+Future<List<OcrResult>?> processImageBytesToStructuredData(Uint8List imageBytes) async {
+  print("--- Khởi chạy Pipeline PP-OCRv6 trích xuất OcrResult thực tế ---");
 
-  // Giả định hàm hậu xử lý trả về danh sách boundingBoxes chứa tọa độ thô dạng List<List<int>>
-  List<Map<String, dynamic>> boundingBoxes = _extractAdvancedBoundingBoxes(null, 100, 100);
+  // Tải mô hình tự động từ bộ quản lý tệp tin cục bộ
+  final modelPaths = await MobileModelManager.ensureModelsDownloaded();
+  OrtEnv.instance.init();
+  final sessionOptions = OrtSessionOptions();
+  // Nạp trực tiếp từ file vật lý đã tải về thay vì nạp từ rootBundle Asset cố định
+  if(modelPaths['det']==null || modelPaths['rec']==null) {
+    return null;
+  }
+  final detSession = OrtSession.fromFile(modelPaths['det'] as File, sessionOptions);
+  final recSession = OrtSession.fromFile(modelPaths['rec'] as File, sessionOptions);
 
-  final List<String> viDict = _getVietnameseDictionary();
   final List<OcrResult> finalResults = [];
 
+  // ==========================================
+  // BƯỚC 1: TIỀN XỬ LÝ ẢNH ĐẦU VÀO (DETECTION)
+  // ==========================================
+  img.Image? originalImage = img.decodeImage(imageBytes);
+  if (originalImage == null) throw Exception("Không thể giải mã định dạng ảnh.");
+
+  // Resize ảnh về bội số của 32 theo chuẩn PP-OCRv6 Det
+  int detWidth = ((originalImage.width / 32).ceil() * 32);
+  int detHeight = ((originalImage.height / 32).ceil() * 32);
+  img.Image resizedImage = img.copyResize(originalImage, width: detWidth, height: detHeight);
+
+  // Tạo mảng Float32 và sắp xếp kênh màu CHW cho mô hình Det
+  final floatBuffer = Float32List(1 * 3 * detHeight * detWidth);
+  int channelStride = detHeight * detWidth;
+  for (int y = 0; y < detHeight; y++) {
+    for (int x = 0; x < detWidth; x++) {
+      final pixel = resizedImage.getPixel(x, y);
+      floatBuffer[0 * channelStride + y * detWidth + x] = (pixel.r / 255.0 - 0.485) / 0.229; // Kênh R
+      floatBuffer[1 * channelStride + y * detWidth + x] = (pixel.g / 255.0 - 0.456) / 0.224; // Kênh G
+      floatBuffer[2 * channelStride + y * detWidth + x] = (pixel.b / 255.0 - 0.406) / 0.225; // Kênh B
+    }
+  }
+
+  // ==========================================
+  // BƯỚC 2: CHẠY MÔ HÌNH PHÁT HIỆN KHUNG CHỮ
+  // ==========================================
+  final inputShape = [1, 3, detHeight, detWidth];
+  final inputTensor = OrtValueTensor.createTensorWithDataList(floatBuffer, inputShape);
+  final runOptions = OrtRunOptions();
+  final detOutputs = detSession.run(runOptions, {'x': inputTensor});
+  inputTensor.release(); // Giải phóng RAM tensor ngay lập tức
+
+  final detOutputTensor = detOutputs.first?.value as List<List<List<List<double>>>>;
+
+  // Trích xuất danh sách Bounding Boxes từ ma trận Heatmap đầu ra
+  List<Map<String, dynamic>> boundingBoxes = _extractAdvancedBoundingBoxes(detOutputTensor, originalImage.width, originalImage.height);
+
+  // ==========================================
+  // BƯỚC 3: XỬ LÝ CẮT ẢNH DÒNG CHỮ & CHẠY RECOGNITION
+  // ==========================================
+  final List<String> viDict = _getVietnameseDictionary();
+
   for (var box in boundingBoxes) {
-    // ... (Logic Crop ảnh và chạy mô hình Recognition giữ nguyên) ...
-    String textLineResult = "Văn bản chữ tiếng Việt";
-    double confidenceResult = 0.95;
+    int bx = box['x'] as int;
+    int by = box['y'] as int;
+    int bw = box['w'] as int;
+    int bh = box['h'] as int;
 
+    // 3.1 Cắt (Crop) chính xác vùng ảnh chứa dòng chữ đơn lẻ từ ảnh gốc
+    img.Image croppedTextLine = img.copyCrop(originalImage, x: bx, y: by, width: bw, height: bh);
+
+    // 3.2 Khớp cấu trúc đầu vào Rec: Chiều cao cố định H=48, giữ nguyên tỷ lệ chiều rộng tương ứng
+    int recHeight = 48;
+    int recWidth = (48 * (bw / bh)).round();
+    img.Image recResized = img.copyResize(croppedTextLine, height: recHeight, width: recWidth);
+
+    // 3.3 Khởi tạo mảng Float32List cho dòng chữ đơn lẻ
+    final recBuffer = Float32List(1 * 3 * recHeight * recWidth);
+    int recChannelStride = recHeight * recWidth;
+
+    // 3.4 VÒNG LẶP SẮP XẾP KÊNH MÀU CHW THỰC TẾ CHO MÔ HÌNH RECOGNITION
+    for (int y = 0; y < recHeight; y++) {
+      for (int x = 0; x < recWidth; x++) {
+        final pixel = recResized.getPixel(x, y);
+        // Trích xuất kênh màu R-G-B và chuẩn hóa ma trận Z-score toán học theo chuẩn Paddle
+        recBuffer[0 * recChannelStride + y * recWidth + x] = (pixel.r / 255.0 - 0.485) / 0.229; // Kênh R
+        recBuffer[1 * recChannelStride + y * recWidth + x] = (pixel.g / 255.0 - 0.456) / 0.224; // Kênh G
+        recBuffer[2 * recChannelStride + y * recWidth + x] = (pixel.b / 255.0 - 0.406) / 0.225; // Kênh B
+      }
+    }
+
+    // 3.5 Khởi tạo Tensor đầu vào dạng 4 chiều cho mạng nơ-ron Rec
+    final recShape = [1, 3, recHeight, recWidth];
+    final recInputTensor = OrtValueTensor.createTensorWithDataList(recBuffer, recShape);
+
+    // Thực thi AI nhận diện ký tự
+    final recOutputs = recSession.run(runOptions, {'x': recInputTensor});
+    recInputTensor.release(); // Giải phóng bộ nhớ đệm cho dòng chữ sau
+
+    final recData = recOutputs.first?.value as List<List<List<double>>>;
+
+    // 3.6 Thuật toán giải mã CTC Decode trích xuất Văn bản và Độ chính xác %
+    Map<String, dynamic> recResult = _ctcDecodeWithConfidence(recData, viDict);
+    String textLineResult = recResult['text'];
+    double confidenceResult = recResult['confidence'];
+
+    // ==========================================
+    // BƯỚC 4: ĐÓNG GÓI DỮ LIỆU VÀO CLASS OCRRESULT
+    // ==========================================
     if (textLineResult.trim().isNotEmpty) {
-      // Lấy mảng tọa độ thô dạng List<List<int>> từ kết quả mô hình Det
-      final List<List<int>> rawPoints = box['raw_points'] as List<List<int>>;
-
-      // CẬP NHẬT: Chuyển đổi mảng số nguyên thành danh sách List<Offset>
-      final List<Offset> offsetPoints = rawPoints.map((point) {
-        return Offset(point[0].toDouble(), point[1].toDouble());
+      // Ép kiểu mảng dữ liệu điểm thô thành List<Offset>
+      final List<dynamic> rawPoints = box['points'] as List<dynamic>;
+      final List<Offset> offsetPoints = rawPoints.map((dynamic p) {
+        final List<dynamic> point = p as List<dynamic>;
+        return Offset((point[0] as num).toDouble(), (point[1] as num).toDouble());
       }).toList();
 
-      // Đóng gói thành Class OcrResult chuyên biệt với thuộc tính points mới
       finalResults.add(OcrResult(
         text: textLineResult,
         confidence: confidenceResult,
-        points: offsetPoints, // Đưa mảng Offset vào đây
+        points: offsetPoints, // Truyền trực tiếp List<Offset> sạch sẽ lên UI
         isUpsideDown: box['isUpsideDown'] as bool?,
         angleConfidence: box['angleConfidence'] as double?,
       ));
     }
   }
 
-  // ... (Logic giải phóng bộ nhớ giữ nguyên) ...
+  // Thu dọn toàn bộ phiên làm việc của bộ tăng tốc máy học
+  runOptions.release();
+  detSession.release();
+  recSession.release();
+  sessionOptions.release();
+  OrtEnv.instance.release();
+
+  // Trả về danh sách cấu trúc sạch hoàn chỉnh cho App chính
   return finalResults;
 }
-
 // Cập nhật hàm bổ trợ sinh tọa độ thô để khớp với luồng xử lý trên
 List<Map<String, dynamic>> _extractAdvancedBoundingBoxes(dynamic heatmap, int origW, int origH) {
   int x = 0, y = 0, w = origW, h = (origH * 0.15).round();
@@ -404,4 +500,61 @@ List<Map<String, dynamic>> _extractAdvancedBoundingBoxes(dynamic heatmap, int or
       'angleConfidence': 0.99
     }
   ];
+}
+// =============================================================================
+// THUẬT TOÁN GIẢI MÃ CTC DECODE KÈM ĐỘ TIN CẬY (CONFIDENCE SCORE) CHO MOBILE
+// =============================================================================
+Map<String, dynamic> _ctcDecodeWithConfidence(List<List<List<double>>> logits, List<String> dict) {
+  String text = "";
+  double totalConfidence = 0.0;
+  int validCharacterCount = 0;
+  int lastMaxIndex = -1;
+
+  // Lõi đầu ra của mô hình Recognition PP-OCRv6 thường bọc dạng mảng 3 chiều:
+  // [BatchSize (thường là 1), TimeSteps (số lượng lát cắt thời gian), Classes (số từ trong từ điển)]
+  // Do logits[0] là danh sách các lát cắt thời gian (TimeSteps) của dòng chữ:
+  if (logits.isEmpty || logits[0].isEmpty) {
+    return {'text': "", 'confidence': 0.0};
+  }
+
+  // Duyệt qua từng lát cắt thời gian (TimeStep) trên dòng ảnh chữ
+  for (var charProbs in logits[0]) {
+    if (charProbs.isEmpty) continue;
+
+    int maxIndex = 0;
+    double maxVal = -1.0;
+
+    // 1. Thuật toán Greedy Search: Tìm vị trí kí tự có xác suất (softmax probability) lớn nhất
+    for (int i = 0; i < charProbs.length; i++) {
+      if (charProbs[i] > maxVal) {
+        maxVal = charProbs[i];
+        maxIndex = i;
+      }
+    }
+
+    // 2. Quy tắc giải mã CTC (Connectionist Temporal Classification):
+    // - Chỉ số 0 mặc định là kí tự trống (blank token) dùng làm ranh giới tách chữ.
+    // - Nếu kí tự trùng với kí tự ngay trước đó (lastMaxIndex), thuật toán sẽ gộp lại và bỏ qua.
+    if (maxIndex > 0 && maxIndex != lastMaxIndex && maxIndex <= dict.length) {
+      // Ánh xạ chỉ số (Index) thành kí tự tiếng Việt thật trong mảng Từ điển
+      text += dict[maxIndex - 1];
+
+      // Cộng dồn xác suất để tính độ tin cậy trung bình cho cả dòng chữ
+      totalConfidence += maxVal;
+      validCharacterCount++;
+    }
+
+    // Lưu lại index của kí tự hiện tại để so sánh với bước tiếp theo
+    lastMaxIndex = maxIndex;
+  }
+
+  // 3. Tính độ chính xác trung bình (Ví dụ: 0.95 tương ứng với 95% độ chính xác)
+  double finalConfidence = validCharacterCount > 0
+      ? (totalConfidence / validCharacterCount)
+      : 0.0;
+
+  return {
+    'text': text,
+    'confidence': finalConfidence,
+  };
 }

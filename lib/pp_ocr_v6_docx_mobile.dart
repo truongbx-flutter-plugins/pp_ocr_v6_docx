@@ -9,8 +9,8 @@ import 'package:http/http.dart' as http;
 
 class MobileModelManager {
   // Thay các URL này bằng link chứa file ONNX PP-OCRv6 thực tế của bạn
-  static const String detModelUrl = "https://your-server.com";
-  static const String recModelUrl = "https://your-server.com";
+  static const String detModelUrl = "https://raw.githubusercontent.com/truongbx-flutter-plugins/pp_ocr_v6_docx/refs/heads/main/asset/model/PP-OCRv6_small_det_onnx.onnx";
+  static const String recModelUrl = "https://raw.githubusercontent.com/truongbx-flutter-plugins/pp_ocr_v6_docx/refs/heads/main/asset/model/PP-OCRv6_small_rec_onnx.onnx";
 
   /// Hàm kiểm tra và tải model về máy nếu chưa tồn tại
   static Future<Map<String, String>> ensureModelsDownloaded() async {

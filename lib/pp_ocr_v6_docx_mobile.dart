@@ -71,8 +71,8 @@ Future<Uint8List?> processPdfToDocx(Uint8List pdfBytes) async {
   if(modelPaths['det']==null || modelPaths['rec']==null) {
     return null;
   }
-  final detSession = OrtSession.fromFile(modelPaths['det'] as File, sessionOptions);
-  final recSession = OrtSession.fromFile(modelPaths['rec'] as File, sessionOptions);
+  final detSession = OrtSession.fromFile(File(modelPaths['det']??""), sessionOptions);
+  final recSession = OrtSession.fromFile(File(modelPaths['rec']??""), sessionOptions);
 
   final docBuilder = docx_creator.docx();
   final document = await PdfDocument.openData(pdfBytes);
@@ -115,8 +115,8 @@ Future<Uint8List?> processImageBytesToDocx(Uint8List imageBytes) async {
   if(modelPaths['det']==null || modelPaths['rec']==null) {
     return null;
   }
-  final detSession = OrtSession.fromFile(modelPaths['det'] as File, sessionOptions);
-  final recSession = OrtSession.fromFile(modelPaths['rec'] as File, sessionOptions);
+  final detSession = OrtSession.fromFile(File(modelPaths['det']??""), sessionOptions);
+  final recSession = OrtSession.fromFile(File(modelPaths['rec']??""), sessionOptions);
 
   final docBuilder = docx_creator.docx();
 
@@ -275,8 +275,8 @@ Future<String?> processImageBytesToText(Uint8List imageBytes) async {
   if(modelPaths['det']==null || modelPaths['rec']==null) {
     return null;
   }
-  final detSession = OrtSession.fromFile(modelPaths['det'] as File, sessionOptions);
-  final recSession = OrtSession.fromFile(modelPaths['rec'] as File, sessionOptions);
+  final detSession = OrtSession.fromFile(File(modelPaths['det']??""), sessionOptions);
+  final recSession = OrtSession.fromFile(File(modelPaths['rec']??""), sessionOptions);
 
   // Sử dụng StringBuffer để tối ưu hiệu năng cộng chuỗi dữ liệu lớn
   final textBuffer = StringBuffer();
@@ -367,8 +367,8 @@ Future<List<OcrResult>?> processImageBytesToStructuredData(Uint8List imageBytes)
   if(modelPaths['det']==null || modelPaths['rec']==null) {
     return null;
   }
-  final detSession = OrtSession.fromFile(modelPaths['det'] as File, sessionOptions);
-  final recSession = OrtSession.fromFile(modelPaths['rec'] as File, sessionOptions);
+  final detSession = OrtSession.fromFile(File(modelPaths['det']??"") , sessionOptions);
+  final recSession = OrtSession.fromFile(File(modelPaths['rec']??""), sessionOptions);
 
   final List<OcrResult> finalResults = [];
 

@@ -21,7 +21,9 @@ dependencies:
   # Render PDF sang Ảnh (Hỗ trợ đa nền tảng bao gồm cả Web)
   pdfx: ^2.9.2
   # Để gọi JS trên Web
-
+  # THÊM THƯ VIỆN BỔ TRỢ TẢI FILE TỰ ĐỘNG
+  http: ^1.2.1
+  path_provider: ^2.1.3
 dev_dependencies:
   flutter_test:
     sdk: flutter

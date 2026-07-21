@@ -24,6 +24,8 @@ dependencies:
   # THÊM THƯ VIỆN BỔ TRỢ TẢI FILE TỰ ĐỘNG
   http: ^1.6.0
   path_provider: ^2.1.6
+  image_picker: ^1.2.3
+  image: ^4.3.0
 dev_dependencies:
   flutter_test:
     sdk: flutter

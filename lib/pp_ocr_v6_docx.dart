@@ -23,7 +23,7 @@ class PpOcrV6Docx {
     return await worker.processImageBytesToText(imageBytes);
   }
   /// HÀM MỚI BỔ SUNG: OCR XFile trả về cấu trúc danh sách List<OcrResult> chuyên biệt
-  static Future<List<OcrResult>> convertXFileToOcrResults(XFile xFile) async {
+  static Future<List<OcrResult>?> convertXFileToOcrResults(XFile xFile) async {
     final imageBytes = await xFile.readAsBytes();
     return await worker.processImageBytesToStructuredData(imageBytes);
   }

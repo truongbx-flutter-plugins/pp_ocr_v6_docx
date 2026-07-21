@@ -15,7 +15,7 @@ dependencies:
   web: ^1.1.1
   plugin_platform_interface: ^2.1.8
   # Thư viện ONNX Runtime Wrapper hỗ trợ Android & iOS
-  onnxruntime: ^1.4.1
+  onnxruntime_v2: ^1.23.2+2
   # Thư viện tạo file Word bằng Dart thuần (Chạy được trên cả Mobile lẫn Web)
   docx_creator: ^1.2.7
   # Render PDF sang Ảnh (Hỗ trợ đa nền tảng bao gồm cả Web)

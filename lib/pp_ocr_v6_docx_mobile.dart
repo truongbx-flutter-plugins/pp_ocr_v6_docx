@@ -1,7 +1,7 @@
 import 'dart:io';
 import 'dart:typed_data';
 import 'package:flutter/services.dart';
-import 'package:onnxruntime/onnxruntime.dart';
+import 'package:onnxruntime_v2/onnxruntime_v2.dart';
 import 'package:pdfx/pdfx.dart';
 import 'package:docx_creator/docx_creator.dart' as docx_creator;
 import 'package:path_provider/path_provider.dart';

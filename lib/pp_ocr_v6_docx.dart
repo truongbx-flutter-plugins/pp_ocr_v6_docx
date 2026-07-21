@@ -2,6 +2,7 @@
 import 'dart:typed_data';
 import 'package:image_picker/image_picker.dart';
 
+import 'model.dart';
 import 'pp_ocr_v6_docx_mobile.dart' if (dart.library.js_interop) 'pp_ocr_v6_docx_web.dart' as worker;
 
 class PpOcrV6Docx {
@@ -16,5 +17,14 @@ class PpOcrV6Docx {
     final Uint8List imageBytes = await xFile.readAsBytes();
     return await worker.processImageBytesToDocx(imageBytes);
   }
-
+  /// HÀM CẬP NHẬT: OCR trực tiếp XFile và chỉ trả về chuỗi văn bản thô (String text)
+  static Future<String?> convertXFileToText(XFile xFile) async {
+    final imageBytes = await xFile.readAsBytes();
+    return await worker.processImageBytesToText(imageBytes);
+  }
+  /// HÀM MỚI BỔ SUNG: OCR XFile trả về cấu trúc danh sách List<OcrResult> chuyên biệt
+  static Future<List<OcrResult>> convertXFileToOcrResults(XFile xFile) async {
+    final imageBytes = await xFile.readAsBytes();
+    return await worker.processImageBytesToStructuredData(imageBytes);
+  }
 }

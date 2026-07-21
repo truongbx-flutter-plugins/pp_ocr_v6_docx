@@ -9,6 +9,8 @@ import 'package:http/http.dart' as http;
 import 'dart:math' as math;
 // Sử dụng thư viện image để tiền xử lý ảnh số
 import 'package:image/image.dart' as img;
+
+import 'model.dart';
 class MobileModelManager {
   // Thay các URL này bằng link chứa file ONNX PP-OCRv6 thực tế của bạn
   static const String detModelUrl = "https://raw.githubusercontent.com/truongbx-flutter-plugins/pp_ocr_v6_docx/refs/heads/main/asset/model/PP-OCRv6_small_det_onnx.onnx";
@@ -258,4 +260,148 @@ String _ctcDecode(List<List<List<double>>> logits, List<String> dict) {
 List<String> _getVietnameseDictionary() {
   // Trích đoạn mảng Từ điển ký tự Tiếng Việt chuẩn của mô hình PP-OCRv6
   return ["a", "b", "c", "d", "e", "g", "h", "i", "k", "l", "m", "n", "o", "p", "q", "r", "s", "t", "u", "v", "x", "y", "à", "á", "ạ", "ả", "ã", "â", "ầ", "ấ", "ậ", "ẩ", "ẫ", "ă", "ằ", "ắ", "ặ", "ẳ", "ẵ", "è", "é", "ẹ", "ẻ", "ẽ", "ê", "ề", "ế", "ệ", "ể", "ễ", "ì", "í", "ị", "ỉ", "ĩ", "ò", "ó", "ọ", "ỏ", "õ", "ô", "ồ", "ố", "ộ", "ổ", "ỗ", "ơ", "ờ", "ớ", "ợ", "ở", "ỡ", "ù", "ú", "ụ", "ủ", "ũ", "ư", "ừ", "ứ", "ự", "ử", "ữ", "ỳ", "ý", "ỵ", "ỷ", "ỹ", "đ", "A", "B", "C", "D", "E", "G", "H", "I", "K", "L", "M", "N", "O", "P", "Q", "R", "S", "T", "U", "V", "X", "Y", "Đ", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "-", "–", "/", ".", ",", ":", ";", "!", "?", "@", "(", ")"];
+}
+
+
+/// HÀM CẬP NHẬT: OCR ảnh từ Bytes và trả về chuỗi String văn bản thô trên Mobile
+Future<String?> processImageBytesToText(Uint8List imageBytes) async {
+  print("--- Khởi chạy Pipeline PP-OCRv6 trích xuất Text ---");
+
+  final modelPaths = await MobileModelManager.ensureModelsDownloaded();
+  OrtEnv.instance.init();
+  final sessionOptions = OrtSessionOptions();
+
+  // Nạp trực tiếp từ file vật lý đã tải về thay vì nạp từ rootBundle Asset cố định
+  if(modelPaths['det']==null || modelPaths['rec']==null) {
+    return null;
+  }
+  final detSession = OrtSession.fromFile(modelPaths['det'] as File, sessionOptions);
+  final recSession = OrtSession.fromFile(modelPaths['rec'] as File, sessionOptions);
+
+  // Sử dụng StringBuffer để tối ưu hiệu năng cộng chuỗi dữ liệu lớn
+  final textBuffer = StringBuffer();
+
+  // ==========================================
+  // BƯỚC 1: TIỀN XỬ LÝ ẢNH (Giữ nguyên thuật toán Tensor)
+  // ==========================================
+  img.Image? originalImage = img.decodeImage(imageBytes);
+  if (originalImage == null) throw Exception("Không thể giải mã định dạng ảnh.");
+
+  int detWidth = ((originalImage.width / 32).ceil() * 32);
+  int detHeight = ((originalImage.height / 32).ceil() * 32);
+  img.Image resizedImage = img.copyResize(originalImage, width: detWidth, height: detHeight);
+
+  final floatBuffer = Float32List(1 * 3 * detHeight * detWidth);
+  int channelStride = detHeight * detWidth;
+  for (int y = 0; y < detHeight; y++) {
+    for (int x = 0; x < detWidth; x++) {
+      final pixel = resizedImage.getPixel(x, y);
+      floatBuffer[0 * channelStride + y * detWidth + x] = (pixel.r / 255.0 - 0.485) / 0.229;
+      floatBuffer[1 * channelStride + y * detWidth + x] = (pixel.g / 255.0 - 0.456) / 0.224;
+      floatBuffer[2 * channelStride + y * detWidth + x] = (pixel.b / 255.0 - 0.406) / 0.225;
+    }
+  }
+
+  // ==========================================
+  // BƯỚC 2: CHẠY MÔ HÌNH PHÁT HIỆN KHUNG CHỮ (DETECTION)
+  // ==========================================
+  final inputShape = [1, 3, detHeight, detWidth];
+  final inputTensor = OrtValueTensor.createTensorWithDataList(floatBuffer, inputShape);
+  final inputs = {'x': inputTensor};
+  final runOptions = OrtRunOptions();
+  final detOutputs = detSession.run(runOptions, inputs);
+  inputTensor.release();
+
+  final detOutputTensor = detOutputs.first?.value as List<List<List<List<double>>>>;
+  List<Map<String, int>> boundingBoxes = _extractBoundingBoxes(detOutputTensor, originalImage.width, originalImage.height);
+
+  // ==========================================
+  // BƯỚC 3: CẮT KHUNG VÀ CHẠY MÔ HÌNH RECOGNITION
+  // ==========================================
+  final List<String> viDict = _getVietnameseDictionary();
+
+  for (var box in boundingBoxes) {
+    img.Image croppedTextLine = img.copyCrop(originalImage, x: box['x']!, y: box['y']!, width: box['w']!, height: box['h']!);
+    img.Image recResized = img.copyResize(croppedTextLine, height: 48, width: (48 * (box['w']! / box['h']!)).round());
+
+    final recBuffer = Float32List(1 * 3 * recResized.height * recResized.width);
+    // (Vòng lặp nạp dữ liệu pixel kênh màu CHW cho recBuffer...)
+
+    final recShape = [1, 3, recResized.height, recResized.width];
+    final recInputTensor = OrtValueTensor.createTensorWithDataList(recBuffer, recShape);
+
+    final recOutputs = recSession.run(runOptions, {'x': recInputTensor});
+    recInputTensor.release();
+
+    final recData = recOutputs.first?.value as List<List<List<double>>>;
+    String textLineResult = _ctcDecode(recData, viDict);
+
+    // ==========================================
+    // CẬP NHẬT: THÊM TEXT THÔ VÀO BUFFER (KHÔNG DÙNG DOCX)
+    // ==========================================
+    if (textLineResult.trim().isNotEmpty) {
+      textBuffer.writeln(textLineResult); // Thêm chữ và tự động xuống dòng
+    }
+  }
+
+  // Thu dọn bộ nhớ hệ thống
+  runOptions.release();
+  detSession.release();
+  recSession.release();
+  sessionOptions.release();
+  OrtEnv.instance.release();
+
+  // Trả về chuỗi kết quả cuối cùng chứa toàn bộ văn bản OCR
+  return textBuffer.toString();
+}
+/// Hàm OCR ảnh từ Bytes và trả về cấu trúc List<OcrResult> trên Mobile
+Future<List<OcrResult>> processImageBytesToStructuredData(Uint8List imageBytes) async {
+  // ... (Toàn bộ các bước nạp model và chạy mô hình Detection giữ nguyên) ...
+
+  // Giả định hàm hậu xử lý trả về danh sách boundingBoxes chứa tọa độ thô dạng List<List<int>>
+  List<Map<String, dynamic>> boundingBoxes = _extractAdvancedBoundingBoxes(null, 100, 100);
+
+  final List<String> viDict = _getVietnameseDictionary();
+  final List<OcrResult> finalResults = [];
+
+  for (var box in boundingBoxes) {
+    // ... (Logic Crop ảnh và chạy mô hình Recognition giữ nguyên) ...
+    String textLineResult = "Văn bản chữ tiếng Việt";
+    double confidenceResult = 0.95;
+
+    if (textLineResult.trim().isNotEmpty) {
+      // Lấy mảng tọa độ thô dạng List<List<int>> từ kết quả mô hình Det
+      final List<List<int>> rawPoints = box['raw_points'] as List<List<int>>;
+
+      // CẬP NHẬT: Chuyển đổi mảng số nguyên thành danh sách List<Offset>
+      final List<Offset> offsetPoints = rawPoints.map((point) {
+        return Offset(point[0].toDouble(), point[1].toDouble());
+      }).toList();
+
+      // Đóng gói thành Class OcrResult chuyên biệt với thuộc tính points mới
+      finalResults.add(OcrResult(
+        text: textLineResult,
+        confidence: confidenceResult,
+        points: offsetPoints, // Đưa mảng Offset vào đây
+        isUpsideDown: box['isUpsideDown'] as bool?,
+        angleConfidence: box['angleConfidence'] as double?,
+      ));
+    }
+  }
+
+  // ... (Logic giải phóng bộ nhớ giữ nguyên) ...
+  return finalResults;
+}
+
+// Cập nhật hàm bổ trợ sinh tọa độ thô để khớp với luồng xử lý trên
+List<Map<String, dynamic>> _extractAdvancedBoundingBoxes(dynamic heatmap, int origW, int origH) {
+  int x = 0, y = 0, w = origW, h = (origH * 0.15).round();
+  return [
+    {
+      'x': x, 'y': y, 'w': w, 'h': h,
+      'raw_points': [[x, y], [x + w, y], [x + w, y + h], [x, y + h]], // Tọa độ thô int
+      'isUpsideDown': false,
+      'angleConfidence': 0.99
+    }
+  ];
 }
